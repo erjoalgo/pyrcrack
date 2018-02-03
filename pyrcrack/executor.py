@@ -1,16 +1,40 @@
 """Pyrcrack-ng Executor helper."""
 
+from contextlib import suppress
 import abc
 import asyncio
 import functools
 import itertools
-import subprocess
 import logging
+import subprocess
+import uuid
 
 import docopt
 import stringcase
 
+from async_timeout import timeout
+
 logging.basicConfig(level=logging.INFO)
+
+
+async def search_in(stream, searcher, max_len=1024,
+                    expect_timeout=30, start=''):
+    """As python-pexpect does not work with coroutines, we do it here."""
+
+    expected = None
+    current = start
+
+    with timeout(expect_timeout):
+        while not expected:
+            current += await stream.read(max_len)
+            if isinstance(searcher, bytes):
+                expected = searcher in current
+            elif callable(searcher):
+                expected = searcher(current)
+                if asyncio.iscoroutine(expected):
+                    expected = await(expected)
+            else:
+                raise Exception("Unsupported search method")
 
 
 class Option:
@@ -66,12 +90,13 @@ class Option:
 class ExecutorHelper:
     """Abstract class interface to a shell command."""
 
-    def __init__(self):
+    def __init__(self, loop=None):
         """Set docstring."""
         if not self.__doc__:
             self.__doc__ = self.helpstr
         self.logger = logging.getLogger(self.__class__.__name__)
         self.logger.setLevel(logging.DEBUG)
+        self.loop = loop
 
     @abc.abstractproperty
     def sync(self):
@@ -121,9 +146,50 @@ class ExecutorHelper:
                 return subprocess.check_output(opts)
             except subprocess.CalledProcessError as excp:
                 return excp.output
-        return asyncio.create_subprocess_exec(opts)
+        kwargs = {'loop': self.loop} if self.loop else {}
+        return asyncio.create_subprocess_exec(opts, **kwargs)
 
 
 def stc(command):
     """Convert snake case to camelcase in class format."""
     return stringcase.pascalcase(command.replace('-', '_'))
+
+
+class CommandWrapper:
+    def __init__(self, loop, command):
+        self.processes = {}
+        self.command = command(loop)
+        self.command.sync = False
+
+    async def launch(self, *args, **kwargs):
+        """Launch a command via asyncio."""
+        uid = uuid.uuid4()
+        self.processes[uid] = self.command.run(*args, **kwargs)
+        return uid
+
+    async def stop(self, key, *args, **kwargs):
+        """Stop a process."""
+        with suppress(Exception):
+            self.processes[key].terminate()
+        self.processes.pop(key)
+
+    async def list_available(self):
+        """List available processes"""
+        return self.processes.keys()
+
+    async def send_signal(self, key, signal):
+        """Send a signal to a specific running process"""
+        self.processes[key].send_signal(signal)
+        if signal in (9, 15):
+            self.stop()
+
+    async def write_to_stdin(self, key, data):
+        self.processes[key].write(data)
+
+    async def read(self, key, num=None, search_for=None, separator='\n'):
+        """Read until given bytes number or given separator found."""
+        if num:
+            return await self.processes[key].stdout.read(n=num)
+        if search_for:
+            return await search_in(self.processes[key].stdout, search_for)
+        return await self.processes[key].stdout.readuntil(separator)

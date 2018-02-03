@@ -15,6 +15,7 @@ python_version = "3.7"
 docopt = "*"
 stringcase = "*"
 "pytest-flake8" = "*"
+async-timeout = "*"
 
 
 [dev-packages]
