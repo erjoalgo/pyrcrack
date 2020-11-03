@@ -4,7 +4,10 @@ from glob import glob
 import asyncio
 import csv
 import io
+import os
+
 from contextlib import suppress
+
 from .executor import ExecutorHelper
 from .models import AccessPoint, Client
 
@@ -92,7 +95,8 @@ class AirodumpNg(ExecutorHelper):
         """Return csv file, not kismet one."""
         glb = glob(self.tempdir.name + "/" + self.uuid + "-*.csv")
         with suppress(StopIteration):
-            return next(a for a in glb if 'kismet' not in a)
+            # skip files like "<prefix>.log.csv", "<prefix>.kismet.csv", etc
+            return next(a for a in glb if os.path.basename(a).count(".") == 1)
 
     def get_results(self):
         """Return results at this moment."""
